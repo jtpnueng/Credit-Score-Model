@@ -160,9 +160,46 @@ jobs:
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
-    - name: Terraform Init
+    # ── Bootstrap: create S3 bucket for Terraform state (idempotent) ──────────
+    # State is stored in S3 so it persists across every CI run.
+    # Without this, each run starts blank and tries to recreate existing resources.
+    - name: Bootstrap Terraform state bucket
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        BUCKET="credit-score-tf-state-${ACCOUNT_ID}"
+        echo "TF_STATE_BUCKET=$BUCKET" >> $GITHUB_ENV
+
+        # Create bucket (no-op if it already exists)
+        aws s3api create-bucket --bucket "$BUCKET" --region ${{ env.AWS_REGION }} 2>/dev/null \
+          || echo "Bucket already exists"
+
+        # Enable versioning so we can recover from a bad state file
+        aws s3api put-bucket-versioning \
+          --bucket "$BUCKET" \
+          --versioning-configuration Status=Enabled
+
+        # Encrypt at rest
+        aws s3api put-bucket-encryption --bucket "$BUCKET" \
+          --server-side-encryption-configuration \
+          '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+    - name: Terraform Init (with S3 backend)
       working-directory: terraform
-      run: terraform init
+      run: |
+        terraform init \
+          -backend-config="bucket=${{ env.TF_STATE_BUCKET }}" \
+          -backend-config="key=terraform.tfstate" \
+          -backend-config="region=${{ env.AWS_REGION }}" \
+          -backend-config="encrypt=true"
+
+    # ── Import any resources that were created before state tracking began ────
+    - name: Import pre-existing AWS resources
+      env:
+        PROJECT_NAME: ${{ env.PROJECT_NAME }}
+        AWS_REGION: ${{ env.AWS_REGION }}
+      run: |
+        chmod +x scripts/tf_import_existing.sh
+        bash scripts/tf_import_existing.sh
 
     - name: Terraform Plan
       working-directory: terraform
