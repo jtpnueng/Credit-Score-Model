@@ -13,7 +13,7 @@ sys.path.insert(0, project_root)
 
 # Now import the utilities
 try:
-    from src.utils import validate_input_data, preprocess_credit_data, prepare_features_and_target
+    from Src.utils import validate_input_data, preprocess_credit_data, prepare_features_and_target
     UTILS_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Could not import utilities: {e}")
@@ -25,11 +25,12 @@ def test_validate_input_data_valid():
     """Test validation with valid credit score input"""
     valid_data = {
         'Age': 30,
-        'Income': 50000,
-        'Education': 'Graduate',
-        'Marital Status': 'Single',
         'Gender': 'Male',
-        'Home Ownership': 'Rent'
+        'Income': 50000,
+        'Education': "Bachelor's Degree",
+        'Marital Status': 'Single',
+        'Number of Children': 0,
+        'Home Ownership': 'Rented'
     }
     
     is_valid, message = validate_input_data(valid_data)
@@ -42,11 +43,12 @@ def test_validate_input_data_invalid_age():
     """Test validation with invalid age"""
     invalid_data = {
         'Age': 150,  # Invalid: too high
-        'Income': 50000,
-        'Education': 'Graduate',
-        'Marital Status': 'Single',
         'Gender': 'Male',
-        'Home Ownership': 'Rent'
+        'Income': 50000,
+        'Education': "Bachelor's Degree",
+        'Marital Status': 'Single',
+        'Number of Children': 0,
+        'Home Ownership': 'Rented'
     }
     
     is_valid, message = validate_input_data(invalid_data)
@@ -60,7 +62,7 @@ def test_validate_input_data_missing_fields():
     incomplete_data = {
         'Age': 30,
         'Income': 50000,
-        # Missing required fields: Education, Marital Status, Gender, Home Ownership
+        # Missing required fields: Gender, Education, Marital Status, Number of Children, Home Ownership
     }
     
     is_valid, message = validate_input_data(incomplete_data)

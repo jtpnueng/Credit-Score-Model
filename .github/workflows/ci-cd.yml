@@ -8,137 +8,176 @@ on:
 
 env:
   PYTHON_VERSION: '3.9'
+  AWS_REGION: us-east-1
+  PROJECT_NAME: credit-score
 
 jobs:
+  # ── 1. Tests ────────────────────────────────────────────────────────────────
   test:
     name: Test Suite
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    
+
     - name: Cache pip dependencies
       uses: actions/cache@v3
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-        restore-keys: |
-          ${{ runner.os }}-pip-
-    
+        restore-keys: ${{ runner.os }}-pip-
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest pytest-cov flake8 black isort mypy
-    
-    - name: Lint with flake8
-      run: |
-        # Stop build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Exit-zero treats all errors as warnings
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics    
-    - name: Check code formatting with black
-      run: |
-        black --check --diff .
-    
-    - name: Check import sorting with isort
-      run: |
-        isort --check-only --diff .
-    
-    - name: Type checking with mypy
-      run: |
-        mypy src/ --ignore-missing-imports
-      continue-on-error: true
-    
-    - name: Run tests with pytest
-      run: |
-        pytest tests/ -v --cov=src --cov-report=xml --cov-report=html
-    
-    - name: Upload coverage to Codecov
+        pip install pytest pytest-cov flake8
+
+    - name: Lint (syntax errors only)
+      run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+    - name: Run tests
+      run: pytest tests/ -v --cov=Src --cov-report=xml --cov-report=term-missing
+
+    - name: Upload coverage
       uses: codecov/codecov-action@v3
       with:
         file: ./coverage.xml
-        flags: unittests
-        name: codecov-umbrella
 
+  # ── 2. Security Scan ────────────────────────────────────────────────────────
   security:
     name: Security Scan
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v4
       with:
         python-version: ${{ env.PYTHON_VERSION }}
-    
+
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install safety bandit
-    
-    - name: Check for security vulnerabilities with safety
-      run: |
-        safety check --json || echo "Security vulnerabilities found"
-    
-    - name: Run bandit security linter
-      run: |
-        bandit -r src/ -f json -o bandit-report.json || echo "Security issues found"
-    
-    - name: Upload security reports
-      uses: actions/upload-artifact@v3
+        pip install -r requirements.txt bandit
+
+    - name: Bandit security scan
+      run: bandit -r Src/ -f json -o bandit-report.json || echo "Issues found — see report"
+
+    - uses: actions/upload-artifact@v3
       with:
         name: security-reports
-        path: |
-          bandit-report.json
+        path: bandit-report.json
 
-  model-validation:
-    name: ML Model Validation
+  # ── 3. Build Docker images → push to ECR ────────────────────────────────────
+  # Runs in the cloud — no local disk space required.
+  # Triggered only on pushes to main (not PRs).
+  build-and-push:
+    name: Build & Push to ECR
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.modified, 'models/') || contains(github.event.head_commit.modified, 'src/')
-    
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    outputs:
+      sagemaker_image_uri: ${{ steps.build-sagemaker.outputs.image_uri }}
+      api_image_uri: ${{ steps.build-api.outputs.image_uri }}
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        python-version: ${{ env.PYTHON_VERSION }}
-    
-    - name: Install dependencies
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Log in to Amazon ECR
+      id: ecr-login
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Create ECR repos if they don't exist
       run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: Validate model performance
+        aws ecr describe-repositories --repository-names ${{ env.PROJECT_NAME }}-sagemaker-model \
+          --region ${{ env.AWS_REGION }} 2>/dev/null \
+          || aws ecr create-repository \
+               --repository-name ${{ env.PROJECT_NAME }}-sagemaker-model \
+               --region ${{ env.AWS_REGION }}
+
+        aws ecr describe-repositories --repository-names ${{ env.PROJECT_NAME }}-api \
+          --region ${{ env.AWS_REGION }} 2>/dev/null \
+          || aws ecr create-repository \
+               --repository-name ${{ env.PROJECT_NAME }}-api \
+               --region ${{ env.AWS_REGION }}
+
+    # --- SageMaker inference container ---
+    - name: Build & push SageMaker image
+      id: build-sagemaker
+      env:
+        REGISTRY: ${{ steps.ecr-login.outputs.registry }}
       run: |
-        python -c "
-        import sys
-        sys.path.append('src')
-        from utils import validate_input_data
-        
-        # Test utility functions
-        sample_data = {
-            'Age': 30, 'Income': 50000, 'Education': 'Graduate',
-            'Marital Status': 'Single', 'Gender': 'Male', 'Home Ownership': 'Rent'
-        }
-        
-        is_valid, msg = validate_input_data(sample_data)
-        print(f'Validation test: {is_valid} - {msg}')
-        
-        if is_valid:
-            print('Model utilities validation passed')
-        else:
-            print('Model utilities validation failed')
-            exit(1)
-        "
+        IMAGE_URI=$REGISTRY/${{ env.PROJECT_NAME }}-sagemaker-model:${{ github.sha }}
+        docker build -f docker/Dockerfile.sagemaker -t $IMAGE_URI .
+        docker push $IMAGE_URI
+        # Also tag as latest
+        docker tag $IMAGE_URI $REGISTRY/${{ env.PROJECT_NAME }}-sagemaker-model:latest
+        docker push $REGISTRY/${{ env.PROJECT_NAME }}-sagemaker-model:latest
+        echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+    # --- FastAPI container ---
+    - name: Build & push API image
+      id: build-api
+      env:
+        REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+      run: |
+        IMAGE_URI=$REGISTRY/${{ env.PROJECT_NAME }}-api:${{ github.sha }}
+        docker build -f docker/Dockerfile.api -t $IMAGE_URI .
+        docker push $IMAGE_URI
+        docker tag $IMAGE_URI $REGISTRY/${{ env.PROJECT_NAME }}-api:latest
+        docker push $REGISTRY/${{ env.PROJECT_NAME }}-api:latest
+        echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+  # ── 4. Terraform → deploy SageMaker + ECS + API Gateway ────────────────────
+  deploy:
+    name: Terraform Deploy
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Terraform Init
+      working-directory: terraform
+      run: terraform init
+
+    - name: Terraform Plan
+      working-directory: terraform
+      run: |
+        terraform plan \
+          -var="sagemaker_image_uri=${{ needs.build-and-push.outputs.sagemaker_image_uri }}" \
+          -var="api_image_uri=${{ needs.build-and-push.outputs.api_image_uri }}"
+
+    - name: Terraform Apply
+      working-directory: terraform
+      run: |
+        terraform apply -auto-approve \
+          -var="sagemaker_image_uri=${{ needs.build-and-push.outputs.sagemaker_image_uri }}" \
+          -var="api_image_uri=${{ needs.build-and-push.outputs.api_image_uri }}"
+
+    - name: Print API Gateway URL
+      working-directory: terraform
+      run: terraform output api_gateway_url

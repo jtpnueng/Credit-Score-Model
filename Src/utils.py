@@ -254,7 +254,7 @@ def validate_input_data(input_dict: Dict[str, Any]) -> Tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
-    required_fields = ['Age', 'Income', 'Education', 'Marital Status', 'Gender', 'Home Ownership']
+    required_fields = ['Age', 'Gender', 'Income', 'Education', 'Marital Status', 'Number of Children', 'Home Ownership']
     
     try:
         # Check for missing fields

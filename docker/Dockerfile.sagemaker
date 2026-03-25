@@ -1,0 +1,31 @@
+# Custom SageMaker inference container.
+# Pins exact package versions to match the training environment,
+# eliminating the scikit-learn / numpy dependency crash from the built-in container.
+FROM python:3.9-slim
+
+RUN pip install --no-cache-dir \
+    scikit-learn==1.2.2 \
+    "numpy<2.0" \
+    pandas \
+    joblib \
+    flask \
+    gunicorn
+
+# SageMaker expects the model at /opt/ml/model/
+RUN mkdir -p /opt/ml/model /opt/program
+
+# Bake the trained pipeline into the image
+COPY Models/credit_scoring_model.pkl /opt/ml/model/credit_score_model.pkl
+
+# Copy the inference server
+COPY docker/serve.py /opt/program/serve.py
+
+ENV PYTHONUNBUFFERED=TRUE
+ENV MODEL_PATH=/opt/ml/model/credit_score_model.pkl
+ENV PATH="/opt/program:${PATH}"
+
+WORKDIR /opt/program
+
+EXPOSE 8080
+
+ENTRYPOINT ["python", "serve.py"]
