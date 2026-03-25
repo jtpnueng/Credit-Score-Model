@@ -27,7 +27,7 @@ resource "aws_security_group" "alb" {
 # ECS tasks — only accept traffic from the ALB
 resource "aws_security_group" "ecs" {
   name        = "${var.project_name}-ecs-sg"
-  description = "Allow traffic from ALB to ECS tasks"
+  description = "Allow traffic from ALB to ECS tasks on port 8000"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
