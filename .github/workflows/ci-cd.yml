@@ -12,7 +12,7 @@ env:
   PROJECT_NAME: credit-score
 
 jobs:
-  # ── 1. Tests ────────────────────────────────────────────────────────────────
+  # ── 1. Tests ─────────────────────────────────────────────────────────────────
   test:
     name: Test Suite
     runs-on: ubuntu-latest
@@ -41,14 +41,14 @@ jobs:
       run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
     - name: Run tests
-      run: pytest tests/ -v --cov=Src --cov-report=xml --cov-report=term-missing
+      run: pytest tests/ -v --cov=Src --cov-report=xml
 
     - name: Upload coverage
       uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
 
-  # ── 2. Security Scan ────────────────────────────────────────────────────────
+  # ── 2. Security Scan ─────────────────────────────────────────────────────────
   security:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -61,8 +61,7 @@ jobs:
         python-version: ${{ env.PYTHON_VERSION }}
 
     - name: Install dependencies
-      run: |
-        pip install -r requirements.txt bandit
+      run: pip install -r requirements.txt bandit
 
     - name: Bandit security scan
       run: bandit -r Src/ -f json -o bandit-report.json || echo "Issues found — see report"
@@ -72,9 +71,9 @@ jobs:
         name: security-reports
         path: bandit-report.json
 
-  # ── 3. Build Docker images → push to ECR ────────────────────────────────────
-  # Runs in the cloud — no local disk space required.
-  # Triggered only on pushes to main (not PRs).
+  # ── 3. Build Docker images → push to ECR ─────────────────────────────────────
+  # Uses Docker BuildX + GitHub Actions cache so layers are reused across runs.
+  # First run: ~15 min.  Every run after: ~2-3 min.
   build-and-push:
     name: Build & Push to ECR
     runs-on: ubuntu-latest
@@ -82,8 +81,8 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     outputs:
-      sagemaker_image_uri: ${{ steps.build-sagemaker.outputs.image_uri }}
-      api_image_uri: ${{ steps.build-api.outputs.image_uri }}
+      sagemaker_image_uri: ${{ steps.meta-sagemaker.outputs.tags_csv }}
+      api_image_uri: ${{ steps.meta-api.outputs.tags_csv }}
 
     steps:
     - uses: actions/checkout@v4
@@ -99,6 +98,10 @@ jobs:
       id: ecr-login
       uses: aws-actions/amazon-ecr-login@v2
 
+    # BuildX enables layer caching — single biggest time-saver
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
     - name: Create ECR repos if they don't exist
       run: |
         aws ecr describe-repositories --repository-names ${{ env.PROJECT_NAME }}-sagemaker-model \
@@ -113,34 +116,50 @@ jobs:
                --repository-name ${{ env.PROJECT_NAME }}-api \
                --region ${{ env.AWS_REGION }}
 
-    # --- SageMaker inference container ---
-    - name: Build & push SageMaker image
-      id: build-sagemaker
-      env:
-        REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+    # ── SageMaker inference container ────────────────────────────────────────
+    - name: Compute SageMaker image tags
+      id: meta-sagemaker
       run: |
-        IMAGE_URI=$REGISTRY/${{ env.PROJECT_NAME }}-sagemaker-model:${{ github.sha }}
-        docker build -f docker/Dockerfile.sagemaker -t $IMAGE_URI .
-        docker push $IMAGE_URI
-        # Also tag as latest
-        docker tag $IMAGE_URI $REGISTRY/${{ env.PROJECT_NAME }}-sagemaker-model:latest
-        docker push $REGISTRY/${{ env.PROJECT_NAME }}-sagemaker-model:latest
-        echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+        REGISTRY=${{ steps.ecr-login.outputs.registry }}
+        REPO=${{ env.PROJECT_NAME }}-sagemaker-model
+        SHA_TAG=$REGISTRY/$REPO:${{ github.sha }}
+        LATEST_TAG=$REGISTRY/$REPO:latest
+        echo "tags_csv=$SHA_TAG" >> $GITHUB_OUTPUT
+        echo "tags=$SHA_TAG,$LATEST_TAG" >> $GITHUB_OUTPUT
 
-    # --- FastAPI container ---
-    - name: Build & push API image
-      id: build-api
-      env:
-        REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+    - name: Build & push SageMaker image (cached)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile.sagemaker
+        push: true
+        tags: ${{ steps.meta-sagemaker.outputs.tags }}
+        # Cache layers in GitHub Actions cache — reused on every subsequent run
+        cache-from: type=gha,scope=sagemaker
+        cache-to:   type=gha,scope=sagemaker,mode=max
+
+    # ── FastAPI container ─────────────────────────────────────────────────────
+    - name: Compute API image tags
+      id: meta-api
       run: |
-        IMAGE_URI=$REGISTRY/${{ env.PROJECT_NAME }}-api:${{ github.sha }}
-        docker build -f docker/Dockerfile.api -t $IMAGE_URI .
-        docker push $IMAGE_URI
-        docker tag $IMAGE_URI $REGISTRY/${{ env.PROJECT_NAME }}-api:latest
-        docker push $REGISTRY/${{ env.PROJECT_NAME }}-api:latest
-        echo "image_uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+        REGISTRY=${{ steps.ecr-login.outputs.registry }}
+        REPO=${{ env.PROJECT_NAME }}-api
+        SHA_TAG=$REGISTRY/$REPO:${{ github.sha }}
+        LATEST_TAG=$REGISTRY/$REPO:latest
+        echo "tags_csv=$SHA_TAG" >> $GITHUB_OUTPUT
+        echo "tags=$SHA_TAG,$LATEST_TAG" >> $GITHUB_OUTPUT
 
-  # ── 4. Terraform → deploy SageMaker + ECS + API Gateway ────────────────────
+    - name: Build & push API image (cached)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile.api
+        push: true
+        tags: ${{ steps.meta-api.outputs.tags }}
+        cache-from: type=gha,scope=api
+        cache-to:   type=gha,scope=api,mode=max
+
+  # ── 4. Terraform → deploy SageMaker + ECS + API Gateway ──────────────────────
   deploy:
     name: Terraform Deploy
     runs-on: ubuntu-latest
@@ -160,30 +179,22 @@ jobs:
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
-    # ── Bootstrap: create S3 bucket for Terraform state (idempotent) ──────────
-    # State is stored in S3 so it persists across every CI run.
-    # Without this, each run starts blank and tries to recreate existing resources.
+    # Ensure S3 bucket exists for state — idempotent, safe to run every time
     - name: Bootstrap Terraform state bucket
       run: |
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         BUCKET="credit-score-tf-state-${ACCOUNT_ID}"
         echo "TF_STATE_BUCKET=$BUCKET" >> $GITHUB_ENV
 
-        # Create bucket (no-op if it already exists)
         aws s3api create-bucket --bucket "$BUCKET" --region ${{ env.AWS_REGION }} 2>/dev/null \
           || echo "Bucket already exists"
-
-        # Enable versioning so we can recover from a bad state file
         aws s3api put-bucket-versioning \
-          --bucket "$BUCKET" \
-          --versioning-configuration Status=Enabled
-
-        # Encrypt at rest
+          --bucket "$BUCKET" --versioning-configuration Status=Enabled
         aws s3api put-bucket-encryption --bucket "$BUCKET" \
           --server-side-encryption-configuration \
           '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 
-    - name: Terraform Init (with S3 backend)
+    - name: Terraform Init
       working-directory: terraform
       run: |
         terraform init \
@@ -192,22 +203,6 @@ jobs:
           -backend-config="region=${{ env.AWS_REGION }}" \
           -backend-config="encrypt=true"
 
-    # ── Import any resources that were created before state tracking began ────
-    - name: Import pre-existing AWS resources
-      env:
-        PROJECT_NAME: ${{ env.PROJECT_NAME }}
-        AWS_REGION: ${{ env.AWS_REGION }}
-      run: |
-        chmod +x scripts/tf_import_existing.sh
-        bash scripts/tf_import_existing.sh
-
-    - name: Terraform Plan
-      working-directory: terraform
-      run: |
-        terraform plan \
-          -var="sagemaker_image_uri=${{ needs.build-and-push.outputs.sagemaker_image_uri }}" \
-          -var="api_image_uri=${{ needs.build-and-push.outputs.api_image_uri }}"
-
     - name: Terraform Apply
       working-directory: terraform
       run: |
@@ -215,6 +210,14 @@ jobs:
           -var="sagemaker_image_uri=${{ needs.build-and-push.outputs.sagemaker_image_uri }}" \
           -var="api_image_uri=${{ needs.build-and-push.outputs.api_image_uri }}"
 
-    - name: Print API Gateway URL
+    - name: Print live endpoints
       working-directory: terraform
-      run: terraform output api_gateway_url
+      run: |
+        echo ""
+        echo "========================================"
+        echo " API Gateway URL:"
+        terraform output api_gateway_url
+        echo ""
+        echo " SageMaker endpoint:"
+        terraform output sagemaker_endpoint_name
+        echo "========================================"
