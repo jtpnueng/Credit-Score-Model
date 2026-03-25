@@ -134,7 +134,12 @@ jobs:
         file: docker/Dockerfile.sagemaker
         push: true
         tags: ${{ steps.meta-sagemaker.outputs.tags }}
-        # Cache layers in GitHub Actions cache — reused on every subsequent run
+        # SageMaker only accepts Docker v2 manifest — NOT OCI image index.
+        # provenance:false and a single platform prevents BuildX from creating
+        # a multi-arch OCI manifest that SageMaker rejects.
+        platforms: linux/amd64
+        provenance: false
+        sbom: false
         cache-from: type=gha,scope=sagemaker
         cache-to:   type=gha,scope=sagemaker,mode=max
 
@@ -202,6 +207,40 @@ jobs:
           -backend-config="key=terraform.tfstate" \
           -backend-config="region=${{ env.AWS_REGION }}" \
           -backend-config="encrypt=true"
+
+    # Import the 3 resources that reliably survive the cleanup script
+    # (CW log group + SGs have inter-dependencies that block deletion).
+    # Each import is capped at 30s. Already-in-state = silently skipped.
+    - name: Import surviving resources
+      working-directory: terraform
+      run: |
+        VPC_ID=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" \
+          --query "Vpcs[0].VpcId" --output text --region ${{ env.AWS_REGION }})
+
+        # CloudWatch log group
+        aws logs describe-log-groups --log-group-name-prefix "/ecs/${{ env.PROJECT_NAME }}-api" \
+          --query "logGroups[0].logGroupName" --output text 2>/dev/null | grep -q "api" \
+          && (terraform state show aws_cloudwatch_log_group.api &>/dev/null \
+              || timeout 30 terraform import aws_cloudwatch_log_group.api \
+                 "/ecs/${{ env.PROJECT_NAME }}-api" 2>/dev/null || true) || true
+
+        # ALB security group
+        ALB_SG=$(aws ec2 describe-security-groups \
+          --filters "Name=group-name,Values=${{ env.PROJECT_NAME }}-alb-sg" \
+                    "Name=vpc-id,Values=$VPC_ID" \
+          --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || echo "")
+        [ -n "$ALB_SG" ] && [ "$ALB_SG" != "None" ] \
+          && (terraform state show aws_security_group.alb &>/dev/null \
+              || timeout 30 terraform import aws_security_group.alb "$ALB_SG" 2>/dev/null || true) || true
+
+        # ECS security group
+        ECS_SG=$(aws ec2 describe-security-groups \
+          --filters "Name=group-name,Values=${{ env.PROJECT_NAME }}-ecs-sg" \
+                    "Name=vpc-id,Values=$VPC_ID" \
+          --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || echo "")
+        [ -n "$ECS_SG" ] && [ "$ECS_SG" != "None" ] \
+          && (terraform state show aws_security_group.ecs &>/dev/null \
+              || timeout 30 terraform import aws_security_group.ecs "$ECS_SG" 2>/dev/null || true) || true
 
     - name: Terraform Apply
       working-directory: terraform
