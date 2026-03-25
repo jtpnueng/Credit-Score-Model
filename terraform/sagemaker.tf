@@ -8,7 +8,8 @@ resource "aws_sagemaker_model" "model" {
     image = var.sagemaker_image_uri
 
     environment = {
-      MODEL_PATH = "/opt/ml/model/credit_score_model.pkl"
+      MODEL_PATH  = "/opt/ml/model/credit_scoring_model.pkl"
+      SCALER_PATH = "/opt/ml/model/scaler.pkl"
     }
   }
 }
@@ -29,11 +30,4 @@ resource "aws_sagemaker_endpoint_configuration" "config" {
 resource "aws_sagemaker_endpoint" "endpoint" {
   name                 = "${var.project_name}-endpoint"
   endpoint_config_name = aws_sagemaker_endpoint_configuration.config.name
-
-  # Explicit timeout so CI fails fast rather than hanging for 30+ minutes.
-  timeouts {
-    create = "15m"
-    update = "15m"
-    delete = "15m"
-  }
 }
