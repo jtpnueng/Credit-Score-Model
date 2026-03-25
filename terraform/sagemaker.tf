@@ -20,11 +20,20 @@ resource "aws_sagemaker_endpoint_configuration" "config" {
     variant_name           = "AllTraffic"
     model_name             = aws_sagemaker_model.model.name
     initial_instance_count = 1
-    instance_type          = "ml.t2.medium"
+    # ml.t2.medium is NOT available for SageMaker real-time inference.
+    # ml.m5.large is the smallest widely-available general-purpose instance.
+    instance_type = "ml.m5.large"
   }
 }
 
 resource "aws_sagemaker_endpoint" "endpoint" {
   name                 = "${var.project_name}-endpoint"
   endpoint_config_name = aws_sagemaker_endpoint_configuration.config.name
+
+  # Explicit timeout so CI fails fast rather than hanging for 30+ minutes.
+  timeouts {
+    create = "15m"
+    update = "15m"
+    delete = "15m"
+  }
 }
