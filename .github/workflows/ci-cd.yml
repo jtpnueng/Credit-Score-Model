@@ -267,7 +267,7 @@ jobs:
           --region $REGION 2>/dev/null && echo "  deleted" || echo "  already gone"
 
         # ── ECS — scale to 0 first so ENIs are released before SG deletion ─────
-        echo "Scaling ECS services to 0 (releases ENIs so SGs can be deleted)..."
+        echo "Scaling ECS services to 0 and deleting..."
         CLUSTER="${PROJECT}-cluster"
         for SVC in "${PROJECT}-api-service" "${PROJECT}-frontend-service"; do
           aws ecs update-service --cluster "$CLUSTER" --service "$SVC" \
@@ -275,6 +275,10 @@ jobs:
         done
         echo "Waiting 30s for tasks to drain..."
         sleep 30
+        for SVC in "${PROJECT}-api-service" "${PROJECT}-frontend-service"; do
+          aws ecs delete-service --cluster "$CLUSTER" --service "$SVC" \
+            --region $REGION 2>/dev/null && echo "  deleted $SVC" || echo "  $SVC already gone"
+        done
 
         # ── ECS + networking ──────────────────────────────────────────────────
         echo "Deleting CloudWatch log groups..."
