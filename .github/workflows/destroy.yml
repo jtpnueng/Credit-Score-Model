@@ -1,0 +1,98 @@
+name: Destroy AWS Infrastructure
+
+on:
+  workflow_dispatch:  # Manual trigger only — never runs automatically
+
+env:
+  AWS_REGION:  us-east-1
+  PROJECT:     credit-score
+  TF_VERSION:  1.6.6
+
+jobs:
+  destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Pre-flight — delete resources Terraform can't destroy cleanly
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGION=${{ env.AWS_REGION }}
+
+          echo "=== Scale ECS services to 0 ==="
+          CLUSTER="${PROJECT}-cluster"
+          for SVC in "${PROJECT}-api-service" "${PROJECT}-frontend-service"; do
+            aws ecs update-service --cluster "$CLUSTER" --service "$SVC" \
+              --desired-count 0 --region $REGION 2>/dev/null \
+              && echo "  scaled $SVC to 0" || echo "  $SVC not found"
+          done
+
+          sleep 15
+
+          echo "=== Delete ECS services ==="
+          for SVC in "${PROJECT}-api-service" "${PROJECT}-frontend-service"; do
+            aws ecs delete-service --cluster "$CLUSTER" --service "$SVC" \
+              --region $REGION 2>/dev/null \
+              && echo "  deleted $SVC" || echo "  $SVC already gone"
+          done
+
+          echo "=== Wait for ECS services to drain ==="
+          for SVC in "${PROJECT}-api-service" "${PROJECT}-frontend-service"; do
+            aws ecs wait services-inactive \
+              --cluster "$CLUSTER" --services "$SVC" \
+              --region $REGION 2>/dev/null \
+              && echo "  $SVC inactive" || echo "  $SVC wait skipped"
+          done
+
+          echo "=== Delete SageMaker endpoint ==="
+          aws sagemaker delete-endpoint \
+            --endpoint-name "${PROJECT}-endpoint" --region $REGION 2>/dev/null \
+            && echo "  endpoint deleted" || echo "  endpoint not found"
+          aws sagemaker wait endpoint-deleted \
+            --endpoint-name "${PROJECT}-endpoint" --region $REGION 2>/dev/null \
+            || echo "  endpoint already gone"
+
+          echo "=== Delete SageMaker endpoint config ==="
+          aws sagemaker delete-endpoint-config \
+            --endpoint-config-name "${PROJECT}-endpoint-config" --region $REGION 2>/dev/null \
+            && echo "  endpoint config deleted" || echo "  not found"
+
+          echo "=== Delete SageMaker model ==="
+          aws sagemaker delete-model \
+            --model-name "${PROJECT}-model" --region $REGION 2>/dev/null \
+            && echo "  model deleted" || echo "  not found"
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          terraform init \
+            -backend-config="bucket=credit-score-tf-state-${ACCOUNT_ID}" \
+            -backend-config="key=credit-score/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}"
+
+      - name: Terraform Destroy
+        working-directory: terraform
+        run: |
+          terraform destroy -auto-approve \
+            -var="sagemaker_image_uri=placeholder" \
+            -var="api_image_uri=placeholder" \
+            -var="frontend_image_uri=placeholder"
+
+      - name: Confirm destroyed
+        run: echo "All AWS infrastructure destroyed."
