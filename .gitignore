@@ -5,6 +5,7 @@ __pycache__/
 # Ignore virtual environments
 env/
 venv/
+venv*/
 
 # Ignore IDE-specific files
 .vscode/
@@ -27,3 +28,6 @@ venv/
 __pycache__/
 .env
 .pytest_cache/
+
+# Generated training artifacts (recreated on every train.py run)
+tmp_artifacts/
