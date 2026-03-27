@@ -14,16 +14,15 @@ RUN pip install --no-cache-dir \
 # SageMaker expects the model at /opt/ml/model/
 RUN mkdir -p /opt/ml/model /opt/program
 
-# Bake the trained artifacts into the image
+# Bake the trained model pipeline into the image
+# Scaler is embedded inside the Pipeline — no separate scaler.pkl needed
 COPY Models/credit_scoring_model.pkl /opt/ml/model/credit_scoring_model.pkl
-COPY Models/scaler.pkl               /opt/ml/model/scaler.pkl
 
 # Copy the inference server
 COPY docker/serve.py /opt/program/serve.py
 
 ENV PYTHONUNBUFFERED=TRUE
 ENV MODEL_PATH=/opt/ml/model/credit_scoring_model.pkl
-ENV SCALER_PATH=/opt/ml/model/scaler.pkl
 ENV PATH="/opt/program:${PATH}"
 
 WORKDIR /opt/program
