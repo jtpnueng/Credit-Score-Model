@@ -1,7 +1,7 @@
 # Custom SageMaker inference container.
 # Pins exact package versions to match the training environment,
 # eliminating the scikit-learn / numpy dependency crash from the built-in container.
-FROM python:3.13-slim
+FROM public.ecr.aws/docker/library/python:3.13-slim
 
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir \
