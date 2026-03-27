@@ -94,5 +94,72 @@ jobs:
             -var="api_image_uri=placeholder" \
             -var="frontend_image_uri=placeholder"
 
+      - name: Force cleanup — remove any orphaned resources not in Terraform state
+        run: |
+          REGION=${{ env.AWS_REGION }}
+          PROJECT=${{ env.PROJECT }}
+          CLUSTER="${PROJECT}-cluster"
+
+          echo "=== ECS services ==="
+          for SVC in "${PROJECT}-api-service" "${PROJECT}-frontend-service"; do
+            aws ecs update-service --cluster "$CLUSTER" --service "$SVC" \
+              --desired-count 0 --region $REGION 2>/dev/null || true
+            aws ecs delete-service --cluster "$CLUSTER" --service "$SVC" \
+              --region $REGION 2>/dev/null && echo "  deleted $SVC" || echo "  $SVC already gone"
+          done
+
+          echo "=== ECS cluster ==="
+          aws ecs delete-cluster --cluster "$CLUSTER" --region $REGION 2>/dev/null \
+            && echo "  cluster deleted" || echo "  already gone"
+
+          echo "=== ALB ==="
+          ALB_ARN=$(aws elbv2 describe-load-balancers --region $REGION \
+            --query "LoadBalancers[?contains(LoadBalancerName,'$PROJECT')].LoadBalancerArn" \
+            --output text 2>/dev/null)
+          [ -n "$ALB_ARN" ] && aws elbv2 delete-load-balancer \
+            --load-balancer-arn "$ALB_ARN" --region $REGION \
+            && echo "  ALB deleted" || echo "  ALB already gone"
+
+          echo "=== Target groups ==="
+          for TG in $(aws elbv2 describe-target-groups --region $REGION \
+            --query "TargetGroups[?contains(TargetGroupName,'$PROJECT')].TargetGroupArn" \
+            --output text 2>/dev/null); do
+            aws elbv2 delete-target-group --target-group-arn "$TG" \
+              --region $REGION 2>/dev/null && echo "  deleted $TG" || echo "  $TG gone"
+          done
+
+          echo "=== API Gateways ==="
+          for APID in $(aws apigatewayv2 get-apis --region $REGION \
+            --query "Items[?contains(Name,'$PROJECT')].ApiId" \
+            --output text 2>/dev/null); do
+            aws apigatewayv2 delete-api --api-id "$APID" \
+              --region $REGION 2>/dev/null && echo "  deleted API GW $APID" || echo "  already gone"
+          done
+
+          echo "=== SageMaker ==="
+          aws sagemaker delete-endpoint \
+            --endpoint-name "${PROJECT}-endpoint" --region $REGION 2>/dev/null || true
+          aws sagemaker delete-endpoint-config \
+            --endpoint-config-name "${PROJECT}-endpoint-config" --region $REGION 2>/dev/null || true
+          aws sagemaker delete-model \
+            --model-name "${PROJECT}-model" --region $REGION 2>/dev/null || true
+
+          echo "=== Security groups ==="
+          sleep 15
+          for SG in $(aws ec2 describe-security-groups --region $REGION \
+            --query "SecurityGroups[?contains(GroupName,'$PROJECT')].GroupId" \
+            --output text 2>/dev/null); do
+            aws ec2 delete-security-group --group-id "$SG" \
+              --region $REGION 2>/dev/null && echo "  deleted $SG" || echo "  $SG in use/gone"
+          done
+
+          echo "=== CloudWatch log groups ==="
+          for LG in "/ecs/${PROJECT}-api" "/ecs/${PROJECT}-frontend"; do
+            aws logs delete-log-group --log-group-name "$LG" \
+              --region $REGION 2>/dev/null && echo "  deleted $LG" || echo "  $LG already gone"
+          done
+
+          echo "=== Done. All resources cleaned up ==="
+
       - name: Confirm destroyed
         run: echo "All AWS infrastructure destroyed."
