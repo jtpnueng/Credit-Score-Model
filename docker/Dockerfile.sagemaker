@@ -4,8 +4,8 @@
 FROM python:3.9-slim
 
 RUN pip install --no-cache-dir \
-    scikit-learn==1.2.2 \
-    "numpy<2.0" \
+    scikit-learn==1.8.0 \
+    numpy \
     pandas \
     joblib \
     flask \
