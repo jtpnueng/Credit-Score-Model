@@ -6,7 +6,7 @@ st.set_page_config(page_title="Credit Default Predictor", page_icon="💳", layo
 
 API_URL = os.environ.get(
     "API_GATEWAY_URL",
-    "https://4p97tzuzvd.execute-api.us-east-1.amazonaws.com"
+    "https://i0rcibotud.execute-api.us-east-1.amazonaws.com"
 ).rstrip("/")
 
 # ── Encoding maps (match Lending Club dataset encoding) ───────────────────────
